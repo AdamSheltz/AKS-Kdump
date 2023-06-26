@@ -1,0 +1,98 @@
+# Version: 2023.06.26-001
+#
+# ************   THIS WILL REBOOT NODES IN YOUR CLUSTER!!  **********
+#
+# Sample Code is provided for the purpose of illustration only and is not intended to be used in a production environment. 
+# THIS SAMPLE CODE AND ANY RELATED INFORMATION ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, 
+# INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS FOR A PARTICULAR PURPOSE.
+# We grant You a nonexclusive, royalty-free right to use and modify the Sample Code and to reproduce and distribute the 
+# object code form of the Sample Code, provided that. You agree: (i) to not use Our name, logo, or trademarks to market Your 
+# software product in which the Sample Code is embedded; (ii) to include a valid copyright notice on Your software product in 
+# which the Sample Code is embedded; and (iii) to indemnify, hold harmless, and defend Us and Our suppliers from and against
+# any claims or lawsuits, including attorneys’ fees, that arise or result from the use or distribution of the Sample Code
+#
+#  This Daemonset as of version 2023.06.26-001 Runs on the AKS clusters version 1.24 + 1.25 but puts the enable-kdump pods in crashloopback off state.
+#   
+#
+#
+# ************   THIS WILL REBOOT NODES IN YOUR CLUSTER!!  **********
+#
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: enable-kdump
+  labels:
+    app: enable-kdump
+spec:
+  selector:
+    matchLabels:
+      name: enable-kdump
+  template:
+    metadata:
+      labels:
+        name: enable-kdump
+    spec:
+      hostPID: true
+      containers:
+        - name: enable-kdump
+          image: debian
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+          command:
+            - /usr/bin/nsenter
+            - -t 1
+            - -m
+            - -u
+            - -i
+            - -n
+            - -p
+            - --
+            - /bin/bash
+            - -c
+            - |
+
+              set -o errexit
+              set -o pipefail
+              set -o nounset
+
+              function check_kdump() {
+                  local kdump_show
+                  kdump_show=$(kdump-config show)
+                  if echo "${kdump_show}" | grep -q "ready to kdump"; then
+                      echo "ready to kdump!"
+
+                      echo "setting sysctls"
+                      sysctl -w kernel.hung_task_panic=1
+                      sysctl -w kernel.hung_task_timeout_secs=20
+                      echo "sysctls are set"
+                  else
+                      echo "kdump not setup, isn't ready"
+                  fi
+                  echo "kdump-config show ==> ${kdump_show}"
+                  echo "/proc/cmdline ==> $(cat /proc/cmdline)"
+              }
+
+              function install() {
+                  echo "installing kdump"
+                  apt-get update
+                  DEBIAN_FRONTEND=noninteractive apt-get install -y linux-crashdump
+                  mkdir -p /crash && chmod 777 /crash && chmod o+t /crash
+                  sed -i 's/^KDUMP_COREDIR=.*/KDUMP_COREDIR=\"\/crash\"/' /etc/default/kdump-tools
+                  sed -i 's/512M-:192M/512M-:256M/' /etc/default/grub.d/kdump-tools.cfg
+                  update-grub
+                  echo "kdump enabled; waiting for reboot in 10 secs..."
+                  ( sleep 10 && reboot ) &
+
+                  while true; do
+                      echo "$(date '+%Y-%m-%dT%H:%M:%SZ') waiting for reboot..."
+                      sleep 1
+                  done
+              }
+
+              if command -v "kdump-config" &> /dev/null; then
+                  check_kdump
+                  sleep 10
+              else
+                  install
+              fi
